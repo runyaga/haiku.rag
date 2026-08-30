@@ -1,0 +1,25 @@
+# Contrast arm: identical to config-federated.yaml except for the reranker.
+# nvidia/llama-nemotron-rerank-vl-1b-v2 on bizon:11434 -- the matched pair to the
+# embedder, and on-machine, so the corpus never leaves the network.
+embeddings:
+  model:
+    provider: vllm
+    name: nvidia/llama-nemotron-embed-vl-1b-v2
+    vector_dim: 2048
+    base_url: http://bizon:11438/v1
+    multimodal: true
+reranking:
+  model:
+    provider: vllm
+    name: nvidia/llama-nemotron-rerank-vl-1b-v2
+    base_url: http://bizon:11434/v1
+  multimodal: false
+lancedb:
+  databases:
+    cv22b: /Users/runyaga/dev/haiku-rag-fusion/experiments/data/cv22b.lancedb
+    ac130j: /Users/runyaga/dev/haiku-rag-fusion/experiments/data/ac130j.lancedb
+search:
+  limit: 6
+storage:
+  auto_vacuum: false
+  vacuum_retention_seconds: 60

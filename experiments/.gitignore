@@ -1,0 +1,16 @@
+# Copies of restricted airpubs corpora (22 GB). Never committed.
+data/
+
+# Built databases -- rebuildable byte-for-byte from the seed in corpus.py,
+# and manifest.json proves any result came from the right corpus.
+*.lancedb/
+
+# Local venv and caches
+.venv/
+.pytest_cache/
+__pycache__/
+.coverage
+.ruff_cache/
+
+# Stray downloads from exploratory corpus research
+scratch/corpus-research/

@@ -1,0 +1,19 @@
+# Baseline arm: two real airpubs corpora, no reranker -> the RRF fusion path.
+embeddings:
+  model:
+    provider: vllm
+    name: nvidia/llama-nemotron-embed-vl-1b-v2
+    vector_dim: 2048
+    base_url: http://bizon:11438/v1
+    multimodal: true
+reranking:
+  model: null
+lancedb:
+  databases:
+    cv22b: /Users/runyaga/dev/haiku-rag-fusion/experiments/data/cv22b.lancedb
+    ac130j: /Users/runyaga/dev/haiku-rag-fusion/experiments/data/ac130j.lancedb
+search:
+  limit: 6
+storage:
+  auto_vacuum: false
+  vacuum_retention_seconds: 60

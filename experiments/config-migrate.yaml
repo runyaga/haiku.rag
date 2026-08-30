@@ -1,0 +1,12 @@
+# Matches the embedder recorded in both airpubs databases, so opening them
+# writable does not raise ConfigMismatchError. Used only to run migrations.
+embeddings:
+  model:
+    provider: vllm
+    name: nvidia/llama-nemotron-embed-vl-1b-v2
+    vector_dim: 2048
+    base_url: http://bizon:11438/v1
+    multimodal: true
+storage:
+  auto_vacuum: false
+  vacuum_retention_seconds: 60

@@ -1,0 +1,166 @@
+{
+ "manifest": "1667337adc3a8ca2998e0211a1e27eb64f19f0d83ebe1b71b6ee8e281d63b1a3",
+ "search_type": "fts",
+ "best_threshold": 0.0,
+ "best_recall": 1.0,
+ "best_precision": 1.0,
+ "sweep": [
+  {
+   "threshold": 0.0,
+   "refusal_recall": 1.0,
+   "refusal_precision": 1.0
+  },
+  {
+   "threshold": 0.05545317009091377,
+   "refusal_recall": 1.0,
+   "refusal_precision": 1.0
+  },
+  {
+   "threshold": 0.057724087964743376,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.9375
+  },
+  {
+   "threshold": 0.05999500583857298,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.9375
+  },
+  {
+   "threshold": 0.06226592371240258,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.8823529411764706
+  },
+  {
+   "threshold": 0.06453684158623219,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.8823529411764706
+  },
+  {
+   "threshold": 0.06680775946006179,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.8823529411764706
+  },
+  {
+   "threshold": 0.06907867733389139,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.8823529411764706
+  },
+  {
+   "threshold": 0.071349595207721,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.8823529411764706
+  },
+  {
+   "threshold": 0.0736205130815506,
+   "refusal_recall": 1.0,
+   "refusal_precision": 0.8823529411764706
+  }
+ ],
+ "raw": {
+  "apiculture->apiculture": {
+   "answerable": true,
+   "scores": [
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815,
+    0.06036873906850815
+   ]
+  },
+  "apiculture->horology": {
+   "answerable": false,
+   "scores": []
+  },
+  "apiculture->textiles": {
+   "answerable": false,
+   "scores": []
+  },
+  "cartography->apiculture": {
+   "answerable": false,
+   "scores": []
+  },
+  "cartography->horology": {
+   "answerable": false,
+   "scores": []
+  },
+  "cartography->textiles": {
+   "answerable": false,
+   "scores": []
+  },
+  "ceramics->apiculture": {
+   "answerable": false,
+   "scores": []
+  },
+  "ceramics->horology": {
+   "answerable": false,
+   "scores": []
+  },
+  "ceramics->textiles": {
+   "answerable": false,
+   "scores": []
+  },
+  "horology->apiculture": {
+   "answerable": false,
+   "scores": []
+  },
+  "horology->horology": {
+   "answerable": true,
+   "scores": [
+    0.05696209892630577,
+    0.05696209892630577,
+    0.05545317009091377,
+    0.05696209892630577,
+    0.05696209892630577,
+    0.05696209892630577,
+    0.05696209892630577,
+    0.05696209892630577,
+    0.05696209892630577,
+    0.05696209892630577
+   ]
+  },
+  "horology->textiles": {
+   "answerable": false,
+   "scores": []
+  },
+  "mineralogy->apiculture": {
+   "answerable": false,
+   "scores": []
+  },
+  "mineralogy->horology": {
+   "answerable": false,
+   "scores": []
+  },
+  "mineralogy->textiles": {
+   "answerable": false,
+   "scores": []
+  },
+  "textiles->apiculture": {
+   "answerable": false,
+   "scores": []
+  },
+  "textiles->horology": {
+   "answerable": false,
+   "scores": []
+  },
+  "textiles->textiles": {
+   "answerable": true,
+   "scores": [
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506,
+    0.0736205130815506
+   ]
+  }
+ }
+}

@@ -1,0 +1,69 @@
+[project]
+name = "fusionlab"
+version = "0.1.0"
+description = "Federated parametric search + selectable fusion over haiku.rag"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fusionlab"]
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN", "PT"]
+ignore = ["ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN201", "ANN001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-q --strict-markers -m 'not integration'"
+markers = [
+  "integration: touches a real database or the embedder endpoint (deselected by default)",
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["fusionlab"]
+# build.py is omitted from the gate: its purpose is to call LanceDB, and the
+# three lines that do (the `async with HaikuRAG(...)` write loop) cannot be
+# covered without stubbing the library, which would test the stub.
+#
+# HONEST CAVEAT: an earlier version of this comment claimed build.py was
+# "covered by tests/test_build_integration.py instead". That was FALSE -- no
+# test imports fusionlab.build. Its pure parts (_imports, the manifest
+# short-circuit, the force branch) are now covered by tests/test_build.py;
+# only the IO remains uncovered, and it is exercised by `make corpus`.
+# build.py is omitted from the GATE, not from testing. Its pure helpers
+# (`_imports`, `_manifest_is_current`) are covered by tests/test_build.py, which
+# runs in the default suite and will catch a regression. What is omitted is the
+# `build()` orchestration around them -- open a database, loop, write files --
+# which cannot be covered without stubbing LanceDB, and would then test the
+# stub. That IO is exercised by `make corpus`.
+#
+# An earlier version of this comment claimed the whole module was covered by
+# tests/test_build_integration.py. That was false; no test imported it.
+omit = ["*/fusionlab/build.py"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_lines = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  # Protocol method bodies are literally `...` and cannot execute. They document
+  # the interface federated_search expects of a haiku.rag client; they are not
+  # dead code, and they are not reachable.
+  "^\\s*\\.\\.\\.$",
+  "class .*\\bProtocol\\b",
+]
