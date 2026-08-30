@@ -176,16 +176,28 @@ class TestFullScanSlope:
     async def test_fts_is_the_sensitive_instrument_for_the_object_store_comparison(
         self, client, manifest
     ):
-        """Recorded as the baseline F6 will be compared against."""
+        """Recorded as the baseline F6 will be compared against.
+
+        Compares RELATIVE variation (range / floor), not absolute ranges. An
+        earlier version compared `fts_range > vec_range * 0.5` and flaked: the
+        vector range is dominated by network jitter to the embedder, so a noisy
+        run widened it and failed the test for the OPPOSITE reason to the one
+        the message gave. Dividing by each arm's own floor removes the constant
+        the arms do not share.
+        """
         fts = await self._ladder(client, manifest, "fts")
         vector = await self._ladder(client, manifest, "vector")
-        fts_range = max(p.best for p in fts.points) - min(p.best for p in fts.points)
-        vec_range = max(p.best for p in vector.points) - min(
-            p.best for p in vector.points
-        )
-        assert fts_range > vec_range * 0.5, (
-            "fts must expose more of the scan cost than vector does, or it is "
-            "not the right instrument for the storage-tier comparison"
+
+        def relative_variation(series) -> float:
+            floor = min(p.best for p in series.points)
+            return (max(p.best for p in series.points) - floor) / floor
+
+        fts_rv = relative_variation(fts)
+        vec_rv = relative_variation(vector)
+        assert fts_rv > vec_rv * 2, (
+            f"fts varies {fts_rv:.2f}x its floor and vector {vec_rv:.2f}x its "
+            "own -- fts is no longer the more sensitive instrument, so the "
+            "storage-tier comparison should not be measured through it"
         )
 
 

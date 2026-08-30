@@ -5,6 +5,7 @@ StubReranker, and the ``query_embedding`` fixture monkeypatching
 ``embed_query``).
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 import pytest
@@ -92,3 +93,21 @@ def two_sources() -> StubClient:
             "beta": StubOwner(chunks("beta", [0.40, 0.39, 0.38])),
         }
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _flush_telemetry() -> Iterator[None]:
+    """Flush Logfire at session end.
+
+    Without this pytest can exit before the exporter drains, and the spans a run
+    produced are silently lost -- which looks identical to telemetry being off.
+    No-ops when there is no token.
+    """
+    yield
+    import os
+
+    if not os.environ.get("LOGFIRE_TOKEN"):
+        return
+    import logfire
+
+    logfire.force_flush(timeout_millis=20000)

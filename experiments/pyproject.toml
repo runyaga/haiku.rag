@@ -58,7 +58,10 @@ omit = ["*/fusionlab/build.py"]
 [tool.coverage.report]
 fail_under = 100
 show_missing = true
-exclude_lines = [
+# `exclude_also` ADDS to coverage's defaults. `exclude_lines` REPLACES them --
+# and the default list is what makes `# pragma: no cover` work at all, so using
+# it silently disabled every pragma in the codebase.
+exclude_also = [
   "if TYPE_CHECKING:",
   "raise NotImplementedError",
   # Protocol method bodies are literally `...` and cannot execute. They document
