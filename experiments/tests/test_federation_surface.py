@@ -10,6 +10,7 @@ from fusionlab.federation import (
     all_cells,
     degenerate_reason,
     meaningful_cells,
+    ranking_is_meaningless,
     report,
     to_kwargs,
 )
@@ -29,7 +30,7 @@ class TestEnumeration:
         assert len(set(ids)) == len(ids)
 
     def test_the_surface_is_not_trivially_small(self):
-        assert len(meaningful_cells()) >= 50
+        assert len(meaningful_cells()) >= 80
 
 
 class TestDegeneracyRules:
@@ -37,21 +38,36 @@ class TestDegeneracyRules:
         cell = FedCell(FilterShape.PER_SOURCE, SearchType.FTS, Fusion.RRF, 1)
         assert "collapses" in degenerate_reason(cell)
 
-    def test_fusion_modes_are_indistinguishable_over_one_source(self):
-        cell = FedCell(FilterShape.NONE, SearchType.FTS, Fusion.RL_NORMALIZED, 1)
-        assert "indistinguishable" in degenerate_reason(cell)
+    def test_fusion_modes_agree_over_one_VECTOR_source(self):
+        cell = FedCell(FilterShape.NONE, SearchType.VECTOR, Fusion.RL_NORMALIZED, 1)
+        assert "MEASURED" in degenerate_reason(cell)
+
+    @pytest.mark.parametrize("search", [SearchType.FTS, SearchType.HYBRID])
+    def test_but_NOT_over_one_fts_or_hybrid_source(self, search):
+        """Measured: rrf and rl_raw diverge over a single fts or hybrid source.
+        BM25 ties arrive non-monotonic, and `resolve_fetch` gives RRF depth 1x
+        against RL's 5x. An earlier version of this rule excluded these cells
+        and was wrong."""
+        cell = FedCell(FilterShape.NONE, search, Fusion.RL_RAW, 1)
+        assert degenerate_reason(cell) is None
 
     def test_rrf_over_one_source_is_kept_as_the_representative(self):
         cell = FedCell(FilterShape.NONE, SearchType.FTS, Fusion.RRF, 1)
         assert degenerate_reason(cell) is None
 
     @pytest.mark.parametrize("fusion", [Fusion.RL_NORMALIZED, Fusion.RL_RAW])
-    def test_relative_fusion_over_hybrid_is_normalising_laundered_ranks(self, fusion):
+    def test_relative_fusion_over_hybrid_has_meaningless_RANKING(self, fusion):
+        """But it still RUNS. Ranking meaninglessness is not degeneracy: the
+        safety properties (no cross-source leak, never over `limit`) are
+        orthogonal to fusion quality, and excluding these cells forfeited that
+        coverage on a reachable code path."""
         cell = FedCell(FilterShape.SHARED, SearchType.HYBRID, fusion, 2)
-        assert "laundered" in degenerate_reason(cell)
+        assert "laundered" in ranking_is_meaningless(cell)
+        assert degenerate_reason(cell) is None
 
-    def test_rrf_over_hybrid_is_fine(self):
+    def test_rrf_over_hybrid_ranks_meaningfully(self):
         cell = FedCell(FilterShape.SHARED, SearchType.HYBRID, Fusion.RRF, 2)
+        assert ranking_is_meaningless(cell) is None
         assert degenerate_reason(cell) is None
 
 

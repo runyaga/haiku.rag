@@ -80,20 +80,43 @@ def degenerate_reason(cell: FedCell) -> str | None:
             "a per-source or partial filter over one source is just a shared "
             "filter; the shape dimension collapses"
         )
-    if cell.sources == 1 and cell.fusion is not Fusion.RRF:
+    if (
+        cell.sources == 1
+        and cell.fusion is not Fusion.RRF
+        and cell.search is SearchType.VECTOR
+    ):
         return (
-            "with one source every fusion rule preserves that source's own "
-            "ordering, so the modes are indistinguishable; the RRF cell covers it"
+            "over one VECTOR source the modes agree: raw scores arrive already "
+            "sorted and every rule is a monotone transform of them, so the RRF "
+            "cell covers all three. MEASURED. This does NOT hold for fts or "
+            "hybrid -- BM25 ties arrive non-monotonic (e.g. 9.3558 repeated with "
+            "a 9.1156 between), and `resolve_fetch` gives RRF depth 1x against "
+            "RL's 5x, so both diverge. An earlier version of this rule excluded "
+            "them too and was wrong."
         )
+    return None
+
+
+def ranking_is_meaningless(cell: FedCell) -> str | None:
+    """Why this cell's RANKING says nothing, though the cell still runs.
+
+    Distinct from degeneracy. Under `hybrid` the per-source scores are already
+    LanceDB RRF output, so relative fusion normalises ranks that were laundered
+    into scores -- measured. That makes the ORDER meaningless, but it does not
+    make the cell unreachable: a caller can configure it, so the safety
+    properties (no cross-source filter leak, never more than `limit`) still need
+    covering. An earlier version excluded these 24 cells outright and thereby
+    forfeited safety coverage on a reachable path for a reason that was only
+    about ranking quality.
+    """
     if cell.search is SearchType.HYBRID and cell.fusion in (
         Fusion.RL_NORMALIZED,
         Fusion.RL_RAW,
     ):
         return (
-            "under hybrid the per-source scores are ALREADY LanceDB RRF output, "
-            "so relative fusion would be normalising ranks that were laundered "
-            "into scores -- measured, and the reason RL is defined for fts and "
-            "vector only"
+            "under hybrid the per-source scores are already LanceDB RRF output, "
+            "so relative fusion normalises laundered ranks; the order is not "
+            "meaningful, though the cell runs and its safety properties hold"
         )
     return None
 
@@ -143,6 +166,9 @@ def report() -> dict[str, object]:
         "cells_total": len(total),
         "cells_meaningful": len(live),
         "cells_degenerate": len(total) - len(live),
+        "cells_ranking_meaningless": sum(
+            1 for c in total if ranking_is_meaningless(c) is not None
+        ),
         "degenerate": {
             c.id: degenerate_reason(c)
             for c in total

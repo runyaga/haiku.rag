@@ -103,6 +103,15 @@ class TestEveryMeaningfulCell:
                 span.set_attribute("hits", len(hits))
                 span.set_attribute("sources_hit", len({h.source for h in hits}))
 
+        # An empty result makes every assertion below vacuous: H1's loop does
+        # not execute, H3 is guarded, H4 is trivially true. The predicate admits
+        # 120-130 documents in every database, so an empty result means the cell
+        # is broken, not merely unlucky.
+        assert hits, (
+            f"{cell.id}: returned nothing. The predicate admits documents in "
+            "every source, so every assertion below would pass vacuously."
+        )
+
         # H4 -- never more than asked for.
         assert len(hits) <= LIMIT, cell.id
 
@@ -123,6 +132,47 @@ class TestEveryMeaningfulCell:
         # H3 -- RRF's head score is a constant of the fusion rule.
         if hits and cell.fusion.value == "rrf":
             assert hits[0].score == pytest.approx(1 / (RRF_K + 1)), cell.id
+
+
+class TestH2SourcesMatchingNothingContributeNothing:
+    """H2 was declared in this file's docstring and never asserted. The suite's
+    PREDICATE admits 120-130 documents per database, so no cell in the matrix
+    exercises a filter that admits nothing."""
+
+    @pytest.mark.parametrize("search_type", ["fts", "vector", "hybrid"])
+    async def test_one_empty_source_contributes_nothing_and_does_not_error(
+        self, rag, search_type
+    ):
+        empty_for_beta = {
+            "alpha_db": PREDICATE,
+            "beta_db": f.meta_eq("owner", "nobody-here"),
+            "gamma_db": PREDICATE,
+        }
+        hits = await federated_search(
+            rag,
+            QUERY,
+            sources=NAMES,
+            filters=empty_for_beta,
+            search_type=search_type,
+            limit=LIMIT,
+        )
+        assert hits, "the two matching sources must still answer"
+        assert "beta_db" not in {h.source for h in hits}
+
+    @pytest.mark.parametrize("search_type", ["fts", "vector", "hybrid"])
+    async def test_every_source_empty_returns_empty_without_raising(
+        self, rag, search_type
+    ):
+        nothing = dict.fromkeys(NAMES, f.meta_eq("owner", "nobody-here"))
+        hits = await federated_search(
+            rag,
+            QUERY,
+            sources=NAMES,
+            filters=nothing,
+            search_type=search_type,
+            limit=LIMIT,
+        )
+        assert hits == []
 
 
 class TestPartialShapeLeavesSourcesOpen:
@@ -146,6 +196,12 @@ class TestPartialShapeLeavesSourcesOpen:
             "no unfiltered source contributed, so this arm cannot distinguish "
             "partial from shared"
         )
+        for h in hits:
+            assert _uri_of(h, uri_by_content) is not None, (
+                f"unrecognised chunk content from {h.source}: the content->uri "
+                "map has broken (chunking changed?), and `None not in allowed` "
+                "would silently satisfy the assertion below instead of failing"
+            )
         outside = [
             h
             for h in hits
