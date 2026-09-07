@@ -15,6 +15,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from haiku.rag import audit
 from haiku.rag.client import HaikuRAG, RebuildMode
 from haiku.rag.config import AppConfig, get_config
 from haiku.rag.mcp import _covering as _mcp_server_covering
@@ -935,6 +936,25 @@ class HaikuRAGApp:
         # single-database configuration drops the name results and citations
         # carry.
         server = _mcp_server_covering(self.scope, self.config, self.read_only)
+
+        def _service(event: audit.Event, outcome: audit.Outcome) -> None:
+            """Record the server's lifecycle. A shutdown that is not recorded
+            leaves a gap an assessor cannot distinguish from a still-running
+            service (ASD STIG V-222468, V-222469)."""
+            audit.emit(
+                audit.AuditEvent(
+                    event=event,
+                    component=audit.Component.MCP,
+                    outcome=outcome,
+                    actor=audit.LOCAL_PROCESS,
+                    actor_source=audit.ActorSource.NO_AUTHENTICATION_SURFACE,
+                    target=transport if transport == "stdio" else f"{host}:{port}",
+                    detail={"read_only": self.read_only},
+                )
+            )
+
+        _service(audit.Event.SERVICE_START, audit.Outcome.SUCCESS)
+        outcome = audit.Outcome.SUCCESS
         try:
             if transport == "stdio":
                 await server.run_stdio_async()
@@ -945,3 +965,8 @@ class HaikuRAGApp:
                 )
         except KeyboardInterrupt:
             pass
+        except Exception:
+            outcome = audit.Outcome.FAILURE
+            raise
+        finally:
+            _service(audit.Event.SERVICE_STOP, outcome)

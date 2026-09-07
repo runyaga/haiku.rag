@@ -1,5 +1,6 @@
 """Audit records, separate from diagnostic logging."""
 
+from haiku.rag.audit.emit import LOGGER_NAME, audited, emit, logger
 from haiku.rag.audit.record import (
     LOCAL_PROCESS,
     UNAUTHENTICATED,
@@ -13,11 +14,15 @@ from haiku.rag.audit.record import (
 
 __all__ = [
     "LOCAL_PROCESS",
+    "LOGGER_NAME",
     "UNAUTHENTICATED",
     "ActorSource",
     "AuditEvent",
     "Component",
     "Event",
     "Outcome",
+    "audited",
+    "emit",
+    "logger",
     "serialize",
 ]

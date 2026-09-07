@@ -68,8 +68,24 @@ def configure(
             scrubbing=scrubbing,
         )
         _lf.instrument_pydantic_ai(include_content=include_content)
-    except Exception:  # pragma: no cover
-        pass
+    except Exception as exc:  # pragma: no cover
+        # Recorded, not swallowed. A telemetry stack that fails silently is
+        # ASD STIG V-222485 (alert on audit processing failure): the operator
+        # believes they have observability and has none. Still non-fatal --
+        # halting on it is V-222486 and belongs with the audit spool, which can
+        # tell a write failure from a forwarding backlog.
+        from haiku.rag import audit
+
+        audit.emit(
+            audit.AuditEvent(
+                event=audit.Event.AUDIT_FAILURE,
+                component=audit.Component.TELEMETRY,
+                outcome=audit.Outcome.FAILURE,
+                actor=audit.LOCAL_PROCESS,
+                actor_source=audit.ActorSource.NO_AUTHENTICATION_SURFACE,
+                detail={"error": type(exc).__name__, "stage": "configure"},
+            )
+        )
 
 
 __all__ = ["attach_context", "configure", "get_context", "logfire"]

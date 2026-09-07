@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastmcp import FastMCP
 
+from haiku.rag.audit import Component, Event, audited
 from haiku.rag.client import HaikuRAG
 from haiku.rag.config import AppConfig, get_config
 from haiku.rag.store.models import Document, SearchResult
@@ -101,42 +102,43 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
     if not read_only:
 
         @mcp.tool()
+        @audited(
+            Event.DOCUMENT_CREATE,
+            Component.MCP,
+            target=lambda file_path, **_: file_path,
+        )
         async def add_document_from_file(
             file_path: str,
             metadata: dict[str, Any] | None = None,
             title: str | None = None,
         ) -> str | None:
             """Add a document to the RAG system from a file path."""
-            try:
-                rag = await _client()
-                result = await rag.create_document_from_source(
-                    Path(file_path), title=title, metadata=metadata or {}
-                )
-                # Handle both single document and list of documents (directories)
-                if isinstance(result, list):
-                    return result[0].id if result else None
-                return result.id
-            except Exception:
-                return None
+            rag = await _client()
+            result = await rag.create_document_from_source(
+                Path(file_path), title=title, metadata=metadata or {}
+            )
+            # Handle both single document and list of documents (directories)
+            if isinstance(result, list):
+                return result[0].id if result else None
+            return result.id
 
         @mcp.tool()
+        @audited(Event.DOCUMENT_CREATE, Component.MCP, target=lambda url, **_: url)
         async def add_document_from_url(
             url: str, metadata: dict[str, Any] | None = None, title: str | None = None
         ) -> str | None:
             """Add a document to the RAG system from a URL."""
-            try:
-                rag = await _client()
-                result = await rag.create_document_from_source(
-                    url, title=title, metadata=metadata or {}
-                )
-                # Handle both single document and list of documents
-                if isinstance(result, list):
-                    return result[0].id if result else None
-                return result.id
-            except Exception:
-                return None
+            rag = await _client()
+            result = await rag.create_document_from_source(
+                url, title=title, metadata=metadata or {}
+            )
+            # Handle both single document and list of documents
+            if isinstance(result, list):
+                return result[0].id if result else None
+            return result.id
 
         @mcp.tool()
+        @audited(Event.DOCUMENT_CREATE, Component.MCP, target=lambda uri=None, **_: uri)
         async def add_document_from_text(
             content: str,
             uri: str | None = None,
@@ -144,26 +146,30 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
             title: str | None = None,
         ) -> str | None:
             """Add a document to the RAG system from text content."""
-            try:
-                rag = await _client()
-                document = await rag.create_document(
-                    content, uri, title=title, metadata=metadata or {}
-                )
-                return document.id
-            except Exception:
-                return None
+            rag = await _client()
+            document = await rag.create_document(
+                content, uri, title=title, metadata=metadata or {}
+            )
+            return document.id
 
         @mcp.tool()
+        @audited(
+            Event.DOCUMENT_DELETE,
+            Component.MCP,
+            target=lambda document_id, **_: document_id,
+            # A delete of an id that is not there succeeds and removes nothing.
+            # Recorded so it is distinguishable from one that removed a
+            # document, and from a store error, which raises.
+            detail_of=lambda removed: {"deleted": bool(removed)},
+        )
         async def delete_document(document_id: str) -> bool:
             """Delete a document by its ID."""
-            try:
-                rag = await _client()
-                return await rag.delete_document(document_id)
-            except Exception:
-                return False
+            rag = await _client()
+            return await rag.delete_document(document_id)
 
     # Read tools - always registered
     @mcp.tool()
+    @audited(Event.SEARCH, Component.MCP)
     async def search_documents(
         query: str, limit: int | None = None, include_images: bool = True
     ) -> list[SearchResult]:
@@ -174,11 +180,8 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
         PNG bytes keyed by self_ref. Set to False to omit the bytes from the
         response (smaller JSON payload for plain-text consumers).
         """
-        try:
-            rag = await _client()
-            return await rag.search(query, limit=limit, include_images=include_images)
-        except Exception:
-            return []
+        rag = await _client()
+        return await rag.search(query, limit=limit, include_images=include_images)
 
     # Image-as-query tool, only registered when the configured embedder
     # supports image embeddings. Probed at server-build time when no Store is
@@ -189,6 +192,7 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
     if get_embedder(config).supports_images:
 
         @mcp.tool()
+        @audited(Event.SEARCH, Component.MCP)
         async def search_documents_by_image(
             image_base64: str,
             limit: int | None = None,
@@ -203,26 +207,23 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
             """
             import base64
 
-            try:
-                raw = base64.b64decode(image_base64)
-            except Exception:
-                return []
-            try:
-                rag = await _client()
-                return await rag.search(raw, limit=limit, include_images=include_images)
-            except Exception:
-                return []
+            # A malformed query image is the caller's error and is reported as
+            # one. Returning [] made it indistinguishable from "no matches".
+            raw = base64.b64decode(image_base64, validate=True)
+            rag = await _client()
+            return await rag.search(raw, limit=limit, include_images=include_images)
 
     @mcp.tool()
+    @audited(
+        Event.DOCUMENT_READ, Component.MCP, target=lambda document_id, **_: document_id
+    )
     async def get_document(document_id: str) -> Document | None:
         """Get a document by its ID."""
-        try:
-            rag = await _client()
-            return await rag.get_document_by_id(document_id)
-        except Exception:
-            return None
+        rag = await _client()
+        return await rag.get_document_by_id(document_id)
 
     @mcp.tool()
+    @audited(Event.DOCUMENT_READ, Component.MCP)
     async def list_documents(
         limit: int | None = None,
         offset: int | None = None,
@@ -238,23 +239,21 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
         is model-supplied, so exposing it hands a model arbitrary read access
         to the store, which `--read-only` does not bound.
         """
-        try:
-            rag = await _client()
-            documents = await rag.list_documents(limit, offset)
+        rag = await _client()
+        documents = await rag.list_documents(limit, offset)
 
-            return [
-                DocumentInfo(
-                    id=doc.id,
-                    title=doc.title or "Untitled",
-                    uri=doc.uri or "",
-                    created=doc.created_at.strftime("%Y-%m-%d"),
-                )
-                for doc in documents
-            ]
-        except Exception:
-            return []
+        return [
+            DocumentInfo(
+                id=doc.id,
+                title=doc.title or "Untitled",
+                uri=doc.uri or "",
+                created=doc.created_at.strftime("%Y-%m-%d"),
+            )
+            for doc in documents
+        ]
 
     @mcp.tool()
+    @audited(Event.ASK, Component.MCP)
     async def ask_question(
         question: str,
         cite: bool = False,
@@ -271,17 +270,15 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
         Returns:
             The answer as a string.
         """
-        try:
-            images = _decode_images(images_base64)
-            rag = await _client()
-            answer, citations = await rag.ask(question, images=images)
-            if cite and citations:
-                answer += "\n\n" + format_citations(citations)
-            return answer
-        except Exception as e:
-            return f"Error answering question: {e!s}"
+        images = _decode_images(images_base64)
+        rag = await _client()
+        answer, citations = await rag.ask(question, images=images)
+        if cite and citations:
+            answer += "\n\n" + format_citations(citations)
+        return answer
 
     @mcp.tool()
+    @audited(Event.ANALYZE, Component.MCP)
     async def analyze(
         question: str,
         images_base64: list[str] | None = None,
@@ -305,12 +302,9 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
         `capabilities/_tools.py`, so a model-supplied value becomes a SQL
         predicate.
         """
-        try:
-            images = _decode_images(images_base64)
-            rag = await _client()
-            result = await rag.analyze(question, images=images)
-            return result.answer
-        except Exception as e:
-            return f"Error running analysis capability: {e!s}"
+        images = _decode_images(images_base64)
+        rag = await _client()
+        result = await rag.analyze(question, images=images)
+        return result.answer
 
     return mcp
