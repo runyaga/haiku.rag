@@ -1,3 +1,4 @@
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -660,6 +661,103 @@ class TelemetryConfig(ConfigModel):
     )
 
 
+class SinkKind(StrEnum):
+    """Where forwarded audit records go."""
+
+    #: RFC 5424 over TLS, the format most SIEMs already ingest.
+    SYSLOG_TLS = "syslog_tls"
+    #: OTLP logs, for a deployment that already runs a collector.
+    OTLP = "otlp"
+    #: A local file. Present because "off-load to a different system" is
+    #: sometimes done by a log shipper reading a file, and pretending
+    #: otherwise would push deployments into configuring nothing at all.
+    FILE = "file"
+
+
+class OnAuditFailure(StrEnum):
+    """What to do when the audit path itself fails."""
+
+    #: ASD STIG V-222486's default: shut down rather than run unaudited.
+    HALT = "halt"
+    #: The rule's own exception, "unless availability is an overriding
+    #: concern". Choosing it is a risk acceptance an ISSO signs, not a
+    #: convenience, which is why it is not the default.
+    CONTINUE = "continue"
+
+
+class AuditSinkConfig(ConfigModel):
+    """One destination for audit records."""
+
+    kind: SinkKind
+    #: "siem.example.mil:6514" for syslog, an OTLP endpoint URL, or a path.
+    address: str = Field(min_length=1)
+    #: Client certificate and key for mutual TLS, and the CA to verify the
+    #: peer. Absent means the transport's default trust store.
+    tls_cert: Path | None = None
+    tls_key: Path | None = None
+    tls_ca: Path | None = None
+
+    @model_validator(mode="after")
+    def _tls_pair_is_complete(self) -> "AuditSinkConfig":
+        """A certificate without its key cannot authenticate anything."""
+        if bool(self.tls_cert) != bool(self.tls_key):
+            raise ValueError(
+                "tls_cert and tls_key must be given together; one without the "
+                "other cannot complete a mutual-TLS handshake"
+            )
+        return self
+
+
+class AuditConfig(ConfigModel):
+    """Audit record generation and forwarding.
+
+    Separate from `telemetry`, which governs tracing. Turning tracing off must
+    not turn auditing off, and the two answer to different owners: telemetry to
+    whoever debugs the service, auditing to whoever signs its authorization.
+
+    ASD STIG V-222480 asks for centralized management of what is captured, and
+    before this section there was nowhere to express any of it: `AppConfig` had
+    fourteen sections and none of them was about audit.
+    """
+
+    #: Off by default so an unconfigured deployment behaves exactly as it did
+    #: before this section existed. A library that starts writing audit records
+    #: to a spool nobody asked for is a surprise, not a control.
+    enabled: bool = False
+    #: Where records are written before they are forwarded. Per-process
+    #: segments live under this directory: haiku.rag runs as short-lived CLI
+    #: invocations and a concurrent worker pool, so a single shared file would
+    #: be written by unrelated processes at once.
+    spool_path: Path = Field(default=Path("audit-spool"))
+    sinks: list[AuditSinkConfig] = Field(default_factory=list)
+    #: V-222486. HALT by default, and a deployment that cannot afford to stop
+    #: records the deviation rather than discovering it.
+    on_failure: OnAuditFailure = OnAuditFailure.HALT
+    #: V-222483 asks for a warning before audit storage is exhausted. Counted
+    #: in unforwarded records, because a byte threshold cannot be compared
+    #: against a spool whose records vary in size.
+    backlog_alert_threshold: int = Field(default=10_000, ge=1)
+    #: V-222478 wants the full text of a privileged command. The arguments of a
+    #: tool call can themselves be sensitive, so a deployment may narrow this
+    #: to the tool name alone -- and then says so, rather than the field
+    #: quietly being absent.
+    include_detail: bool = True
+
+    @model_validator(mode="after")
+    def _enabled_needs_somewhere_to_go(self) -> "AuditConfig":
+        """Auditing turned on with no sink writes to a spool nothing drains.
+
+        Refused rather than defaulted: guessing a destination for audit records
+        is worse than declining to start.
+        """
+        if self.enabled and not self.sinks:
+            raise ValueError(
+                "audit.enabled is true but no sinks are configured; records "
+                "would accumulate in the spool and never be off-loaded"
+            )
+        return self
+
+
 class AppConfig(ConfigModel):
     environment: str = "production"
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -674,6 +772,7 @@ class AppConfig(ConfigModel):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
     ingester: IngesterConfig = Field(default_factory=IngesterConfig)
     evaluations: "EvaluationsConfig" = Field(
         default_factory=lambda: EvaluationsConfig()
