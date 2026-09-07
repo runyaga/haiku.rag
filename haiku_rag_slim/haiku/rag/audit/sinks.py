@@ -37,15 +37,24 @@ class Sink(Protocol):
     def send(self, records: Sequence[str], chain_head: str) -> None: ...
 
 
-def rfc5424(record: str, *, hostname: str, app_name: str, chain_head: str) -> str:
+def rfc5424(
+    record: str, *, hostname: str, app_name: str, chain_head: str, sd_id: str
+) -> str:
     """One record as an RFC 5424 frame.
 
     The chain head rides in a structured-data element rather than in the
-    message, so a receiver can verify the spool's integrity claim without
-    parsing our JSON -- and so it survives a pipeline that rewrites the message.
+    message, because SD is RFC 5424's own extension point (section 6.3) and a
+    conforming receiver must accept an SD-ID it does not know -- so the head
+    survives a pipeline that rewrites the message.
+
+    What this does NOT establish is that a given SIEM EXTRACTS the head. That
+    is a property of the receiver, it is not knowable from here, and an earlier
+    version of this claimed it. The frame is conformant and puts the head where
+    a receiver CAN find it; whether one does is a per-deployment question, which
+    is why `sd_id` is configuration rather than a constant.
     """
     stamp = datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    structured = f'[haikuRagAudit@32473 chainHead="{chain_head}"]'
+    structured = f'[{sd_id} chainHead="{chain_head}"]'
     return (
         f"<{SYSLOG_PRI}>{SYSLOG_VERSION} {stamp} {hostname or NILVALUE} "
         f"{app_name} {NILVALUE} {NILVALUE} {structured} {record}"
@@ -80,11 +89,19 @@ class SyslogTLSSink:
     content can split its own frame is a record an attacker can forge around.
     """
 
-    def __init__(self, address: str, config: AuditSinkConfig | None = None) -> None:
+    def __init__(
+        self, address: str, config: AuditSinkConfig | None = None, *, sd_id: str = ""
+    ) -> None:
         host, _, port = address.rpartition(":")
         self.host = host or "localhost"
         self.port = int(port)
         self.config = config
+        self.sd_id = sd_id or (config.syslog_sd_id if config else "") or ""
+        if not self.sd_id:
+            raise ValueError(
+                "a syslog sink needs an SD-ID to carry the chain head in; see "
+                "AuditSinkConfig.syslog_sd_id"
+            )
         self.hostname = socket.gethostname()
 
     def _connect(self) -> socket.socket:
@@ -105,5 +122,6 @@ class SyslogTLSSink:
                     hostname=self.hostname,
                     app_name="haiku.rag",
                     chain_head=chain_head,
+                    sd_id=self.sd_id,
                 ).encode()
                 connection.sendall(f"{len(frame)} ".encode() + frame)

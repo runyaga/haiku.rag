@@ -696,6 +696,26 @@ class AuditSinkConfig(ConfigModel):
     tls_cert: Path | None = None
     tls_key: Path | None = None
     tls_ca: Path | None = None
+    #: The RFC 5424 SD-ID the chain head rides in, e.g.
+    #: "acmeAudit@32473" with the operator's own IANA Private Enterprise
+    #: Number. Required for a syslog sink and deliberately without a default:
+    #: RFC 5612 reserves 32473 for documentation, so any PEN this library
+    #: invented would be either that placeholder or someone else's. Which
+    #: SD-ID a receiver reads is a property of the deployment's SIEM, and
+    #: guessing a wire format the receiver silently drops is the failure this
+    #: refuses to make on an operator's behalf.
+    syslog_sd_id: str | None = None
+
+    @model_validator(mode="after")
+    def _syslog_names_its_sd_id(self) -> "AuditSinkConfig":
+        """A syslog sink must say where the chain head goes."""
+        if self.kind is SinkKind.SYSLOG_TLS and not self.syslog_sd_id:
+            raise ValueError(
+                "a syslog_tls sink must set syslog_sd_id, e.g. "
+                "'yourAudit@<your IANA enterprise number>'; there is no safe "
+                "default because RFC 5612 reserves 32473 for documentation"
+            )
+        return self
 
     @model_validator(mode="after")
     def _tls_pair_is_complete(self) -> "AuditSinkConfig":
