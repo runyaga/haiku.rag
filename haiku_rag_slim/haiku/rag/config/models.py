@@ -313,6 +313,18 @@ class PromptsConfig(BaseModel):
     )
 
 
+class TelemetryConfig(BaseModel):
+    """Settings controlling what application telemetry may export."""
+
+    include_content: bool = Field(
+        default=False,
+        description=(
+            "Include prompts, completions, and retrieved content in telemetry "
+            "spans. Disabled by default because content may be sensitive."
+        ),
+    )
+
+
 class EvaluationsConfig(BaseModel):
     """Settings consumed only by the `evaluations` package."""
 
@@ -568,6 +580,7 @@ class AppConfig(BaseModel):
     doctor: DoctorConfig = Field(default_factory=DoctorConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     ingester: IngesterConfig = Field(default_factory=IngesterConfig)
     evaluations: "EvaluationsConfig" = Field(
         default_factory=lambda: EvaluationsConfig()

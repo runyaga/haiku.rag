@@ -120,7 +120,9 @@ def main(
 
     is_production = get_config().environment != "development"
     configure_telemetry(
-        service_name="haiku-rag", console=False if is_production else None
+        service_name="haiku-rag",
+        console=False if is_production else None,
+        include_content=get_config().telemetry.include_content,
     )
 
     if get_config().environment != "development":

@@ -33,8 +33,6 @@ from haiku.rag.utils import get_model
 
 load_dotenv(find_dotenv(usecwd=True))
 
-configure_telemetry(service_name="haiku-rag-app")
-
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -47,6 +45,11 @@ if config_path.exists():
     Config = AppConfig.model_validate(yaml_data)
 else:
     Config = AppConfig()
+
+configure_telemetry(
+    service_name="haiku-rag-app",
+    include_content=Config.telemetry.include_content,
+)
 
 # Get DB path from environment
 db_path_str = os.getenv("DB_PATH", "haiku_rag.lancedb")

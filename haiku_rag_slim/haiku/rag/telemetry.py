@@ -22,6 +22,7 @@ def configure(
     service_name: str | None = None,
     console: Literal[False] | None = False,
     scrubbing: Literal[False] | None = None,
+    include_content: bool = False,
 ) -> None:
     """Configure Logfire and enable pydantic-ai instrumentation for the
     running process. Each CLI entry point calls this once at startup.
@@ -38,6 +39,9 @@ def configure(
     - scrubbing: None (default) keeps logfire's secret scrubbing on. Pass
       False to disable it when span content legitimately contains tokens
       that trip the scrubber (e.g. eval answer text).
+    - include_content: whether pydantic-ai instrumentation may attach prompt
+      and completion content to spans. Disabled by default because prompts,
+      completions, and retrieved corpus text may contain sensitive data.
     """
     try:
         import logfire as _lf
@@ -61,7 +65,7 @@ def configure(
             console=console,
             scrubbing=scrubbing,
         )
-        _lf.instrument_pydantic_ai()
+        _lf.instrument_pydantic_ai(include_content=include_content)
     except Exception:  # pragma: no cover
         pass
 

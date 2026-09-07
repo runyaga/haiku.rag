@@ -31,6 +31,7 @@ from haiku.rag.config.models import (
     S3SourceConfig,
     SourceConfig,
     StorageConfig,
+    TelemetryConfig,
     WebDAVSourceConfig,
     WorkerConfig,
 )
@@ -61,6 +62,7 @@ __all__ = [
     "S3SourceConfig",
     "SourceConfig",
     "StorageConfig",
+    "TelemetryConfig",
     "WebDAVSourceConfig",
     "WorkerConfig",
     "MissingEnvVarError",

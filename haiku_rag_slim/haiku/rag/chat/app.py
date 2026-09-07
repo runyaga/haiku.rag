@@ -39,7 +39,10 @@ from haiku.rag.client import HaikuRAG
 from haiku.rag.config import get_config
 from haiku.rag.telemetry import configure as configure_telemetry
 
-configure_telemetry(service_name="haiku-rag")
+configure_telemetry(
+    service_name="haiku-rag",
+    include_content=get_config().telemetry.include_content,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult

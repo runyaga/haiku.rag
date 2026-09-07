@@ -61,9 +61,12 @@ def main(
     each one redeclaring it. Mirrors haiku-rag's CLI shape."""
     from haiku.rag.telemetry import configure as configure_telemetry
 
-    _load_config_with_override(config)
+    app_config = _load_config_with_override(config)
     configure_cli_logging()
-    configure_telemetry(service_name="haiku-ingester")
+    configure_telemetry(
+        service_name="haiku-ingester",
+        include_content=app_config.telemetry.include_content,
+    )
 
 
 def cli() -> None:
