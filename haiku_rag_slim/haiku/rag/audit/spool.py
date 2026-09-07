@@ -6,10 +6,22 @@ concurrent worker pool that already identifies its processes as
 ``f"{os.getpid()}-{uuid4().hex[:8]}"`` (``ingester/workers/pool.py``), so a
 single append-only file would be written by unrelated processes at once.
 
-Each line carries the hash of the line before it. A record cannot be removed,
-reordered or edited without breaking the chain, which is what makes the spool
-evidence rather than a list -- ASD STIG V-222507 asks for cryptographic
-mechanisms protecting the integrity of audit information.
+Each line carries the hash of the line before it, and sealing writes a footer
+naming the record count and the final head. Editing, reordering, duplicating or
+removing a record from the middle breaks the chain; removing records from the
+END breaks the footer, which a chain alone does not catch -- a truncated
+prefix is still a valid chain from GENESIS, and erasing your own last actions
+is the obvious attack. Found by review, after the first version claimed
+otherwise (ASD STIG V-222507).
+
+**What this does and does not buy.** Against a process that crashes, or a
+transport that garbles, it is conclusive. Against an attacker with write access
+to the spool it raises the cost -- they must rewrite every subsequent digest
+and the footer -- but it cannot be conclusive locally, because anything this
+file can compute that attacker can recompute. The guarantee that survives them
+is continuity at the RECEIVER: each forwarded batch carries its chain head, so
+a SIEM that records the previous head can see a gap it never received. That
+check lives on the far side and is not implemented here.
 
 Writing is separated from forwarding on purpose. A short-lived process must be
 able to finish and exit the moment its record is durable; whether that record
@@ -30,6 +42,10 @@ if TYPE_CHECKING:
 
 #: Opens a chain. Distinguishable from a real digest at a glance.
 GENESIS = "0" * 64
+
+#: Written by `close()`. Its presence is what makes a sealed segment's LENGTH
+#: attested rather than merely its contents.
+FOOTER_KEY = "sealed"
 
 #: A segment is claimed by the process that created it. `.open` while its
 #: writer may still be running; renamed to `.sealed` when it exits cleanly.
@@ -90,9 +106,22 @@ class Segment:
         return digest
 
     def close(self) -> Path:
-        """Seal the segment, so a forwarder knows its writer finished."""
+        """Seal the segment: attest its length, then mark the writer finished.
+
+        The footer is what makes truncation detectable. Without it a segment
+        with its last N lines deleted is still a valid chain, so an attacker
+        could erase the record of whatever they did last and leave no trace.
+        """
         if not self.path.exists():
             return self.path
+        footer = json.dumps(
+            {FOOTER_KEY: True, "count": self._count, "head": self._previous},
+            separators=(",", ":"),
+        )
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(footer + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         sealed = self.path.with_suffix(SEALED_SUFFIX)
         self.path.rename(sealed)
         self.path = sealed
@@ -104,22 +133,37 @@ class BrokenChain(Exception):
 
 
 def read_segment(path: Path) -> list[str]:
-    """Every record in a segment, verifying the chain as it goes.
+    """Every record in a segment, verifying the chain and the seal.
 
-    Raises rather than skipping a bad line: a spool that quietly drops the
-    record someone tampered with defeats the point of chaining it.
+    A torn LAST line is tolerated and the valid prefix returned: a process
+    killed mid-write leaves one, and discarding every record before it would
+    lose exactly the audit trail of the crash. A break anywhere EARLIER is
+    tampering and raises -- a spool that quietly drops the record someone
+    edited defeats the point of chaining it.
     """
+    lines = [
+        (number, line)
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        )
+        if line.strip()
+    ]
     records: list[str] = []
     previous = GENESIS
-    for number, line in enumerate(
-        path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        if not line.strip():
-            continue
+    footer: dict[str, object] | None = None
+
+    for position, (number, line) in enumerate(lines):
+        is_last = position == len(lines) - 1
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as exc:
+            if is_last:
+                # A torn tail. Everything before it is intact and forwardable.
+                break
             raise BrokenChain(f"{path.name}:{number} is not valid JSON") from exc
+        if entry.get(FOOTER_KEY):
+            footer = entry
+            continue
         if entry.get("prev") != previous:
             raise BrokenChain(
                 f"{path.name}:{number} claims to follow {entry.get('prev')!r}, "
@@ -134,6 +178,20 @@ def read_segment(path: Path) -> list[str]:
             )
         records.append(entry["record"])
         previous = expected
+
+    if path.name.endswith(SEALED_SUFFIX):
+        if footer is None:
+            raise BrokenChain(
+                f"{path.name} is sealed but carries no footer -- it was "
+                f"truncated past its own seal"
+            )
+        if footer.get("count") != len(records) or footer.get("head") != previous:
+            raise BrokenChain(
+                f"{path.name} attests {footer.get('count')} records ending at "
+                f"{str(footer.get('head'))[:16]}..., but {len(records)} were "
+                f"found ending at {previous[:16]}... -- records were removed "
+                f"from the end"
+            )
     return records
 
 
@@ -144,9 +202,14 @@ def head_of(path: Path) -> str:
         if not line.strip():
             continue
         try:
-            previous = json.loads(line)["digest"]
-        except (json.JSONDecodeError, KeyError):
+            entry = json.loads(line)
+        except json.JSONDecodeError:
             break
+        if entry.get(FOOTER_KEY):
+            continue
+        if "digest" not in entry:
+            break
+        previous = entry["digest"]
     return previous
 
 

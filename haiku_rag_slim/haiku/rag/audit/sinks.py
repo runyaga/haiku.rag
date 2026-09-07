@@ -96,7 +96,10 @@ class SyslogTLSSink:
         self.host = host or "localhost"
         self.port = int(port)
         self.config = config
-        self.sd_id = sd_id or (config.syslog_sd_id if config else "") or ""
+        self.sd_id = (sd_id or (config.syslog_sd_id if config else "") or "").strip()
+        # Stripped before the check: an SD-ID of spaces satisfies every type
+        # annotation and names nothing, which is the same defect as an actor
+        # of whitespace.
         if not self.sd_id:
             raise ValueError(
                 "a syslog sink needs an SD-ID to carry the chain head in; see "

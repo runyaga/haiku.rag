@@ -58,20 +58,45 @@ class ForwardResult:
         )
 
 
+def writer_is_live(path: Path) -> bool:
+    """Whether the process that owns an open segment still exists.
+
+    The segment name starts with the pid that created it. Not authoritative --
+    a pid can be reused, and a container may not share a pid namespace -- so it
+    is used to WITHHOLD draining rather than to permit it: an unknown answer
+    leaves the segment alone, which costs a delay, where the opposite error
+    costs the chain.
+    """
+    pid_text = path.name.split("-", 1)[0]
+    if not pid_text.isdigit():
+        return False
+    try:
+        os.kill(int(pid_text), 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
 def _drainable(path: Path, now: float) -> bool:
     """Whether this segment may be drained on this pass.
 
-    A sealed segment always may: its writer is finished. An open one may only
-    once it has gone quiet, because its writer may still be appending -- and
-    the writer that never seals is exactly the crashed process whose records
-    must not be stranded.
+    A sealed segment always may: its writer is finished. An open one needs BOTH
+    to have gone quiet AND its writer to be gone.
+
+    Staleness alone is not enough, and the first version of this used only
+    that. A live writer idle for the staleness window would have had its open
+    segment drained and unlinked underneath it, and its next append would start
+    a fresh file whose `prev` pointed at a digest no longer on disk --
+    permanently breaking the chain for everything after. An idle process is not
+    a dead one, and the fix for a busy service must not be to audit it less.
     """
     if path.name.endswith(SEALED_SUFFIX):
         return True
     try:
-        return (now - path.stat().st_mtime) > STALE_SECONDS
+        quiet = (now - path.stat().st_mtime) > STALE_SECONDS
     except OSError:
         return False
+    return quiet and not writer_is_live(path)
 
 
 def drain(spool: Path, sinks: list[Sink], *, now: float | None = None) -> ForwardResult:
@@ -141,20 +166,3 @@ def orphaned(spool: Path, *, now: float | None = None) -> list[Path]:
         for path in segments(spool)
         if path.name.endswith(OPEN_SUFFIX) and _drainable(path, moment)
     ]
-
-
-def writer_is_live(path: Path) -> bool:
-    """Whether the process that owns an open segment still exists.
-
-    A cheap second opinion on staleness: the segment name starts with the pid
-    that created it. Not authoritative -- pids are reused, and a container may
-    not share a pid namespace -- so it informs the log rather than the decision.
-    """
-    pid_text = path.name.split("-", 1)[0]
-    if not pid_text.isdigit():
-        return False
-    try:
-        os.kill(int(pid_text), 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
