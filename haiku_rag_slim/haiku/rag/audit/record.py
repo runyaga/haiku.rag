@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 #: The value `actor` takes when no identity was established. A sentinel rather
 #: than None or "": a record whose actor is absent is indistinguishable from a
@@ -99,6 +99,12 @@ class ActorSource(StrEnum):
     AUTH_DISABLED = "auth_disabled"
     #: There is no caller to authenticate: CLI, stdio MCP, local TUI.
     NO_AUTHENTICATION_SURFACE = "no_authentication_surface"
+    #: A credential WAS required and the caller did not present a matching one.
+    #: Distinct from AUTH_DISABLED, which says the opposite about the server's
+    #: configuration -- conflating them records "the control plane was open" for
+    #: a request that was in fact refused, which is the kind of false statement
+    #: this whole field exists to prevent.
+    CREDENTIAL_REJECTED = "credential_rejected"
 
 
 def _now() -> datetime:
@@ -134,6 +140,20 @@ class AuditEvent(BaseModel):
     trace_id: str | None = None
     detail: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("actor")
+    @classmethod
+    def _actor_is_not_blank(cls, value: str) -> str:
+        """An actor of whitespace is not an identity.
+
+        `min_length=1` accepts a single space, which produces a record
+        asserting an authenticated caller whose identity is `" "` -- consistent
+        with its source and useless for attribution, which is the shape of
+        defect this model exists to refuse.
+        """
+        if not value.strip():
+            raise ValueError("actor must not be blank")
+        return value
+
     @model_validator(mode="after")
     def _actor_agrees_with_its_source(self) -> AuditEvent:
         """The actor and how it was established must not contradict each other.
@@ -159,7 +179,8 @@ class AuditEvent(BaseModel):
                 f"caller to authenticate, so actor must be {LOCAL_PROCESS!r}"
             )
         if (
-            self.actor_source is ActorSource.AUTH_DISABLED
+            self.actor_source
+            in {ActorSource.AUTH_DISABLED, ActorSource.CREDENTIAL_REJECTED}
             and self.actor != UNAUTHENTICATED
         ):
             raise ValueError(

@@ -11,6 +11,8 @@ so this logger propagates and nothing here silences the root.
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import functools
 import logging
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
@@ -24,6 +26,7 @@ from haiku.rag.audit.record import (
     Outcome,
     serialize,
 )
+from haiku.rag.audit.spool import Segment
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -35,24 +38,88 @@ LOGGER_NAME = "haiku.rag.audit"
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
+#: This process's segment. One per process, opened lazily: a CLI invocation
+#: that audits nothing should not create a file.
+_SEGMENT: Segment | None = None
+
 
 def logger() -> logging.Logger:
     """The audit logger. Propagates on purpose, unlike `haiku.rag`."""
     return logging.getLogger(LOGGER_NAME)
 
 
-def emit(record: AuditEvent) -> None:
-    """Write one record as one line.
+class AuditWriteError(Exception):
+    """The audit path failed and the configured policy is to halt.
 
-    Never raises: an audit sink that takes the application down when it is
-    misconfigured is worse than one that reports. Failing loudly on audit
-    failure is V-222485/V-222486 and belongs with the spool that can tell a
-    write failure from a forwarding backlog, not here.
+    Its own type so a caller can tell "auditing failed" from any other error.
+    ASD STIG V-222486 asks the application to shut down upon audit failure
+    unless availability overrides it, and a deployment that chose `continue`
+    gets a logged failure instead of this.
     """
+
+
+def _spool() -> Segment | None:
+    """This process's spool segment, opened once, or None when audit is off."""
+    global _SEGMENT
+    if _SEGMENT is not None:
+        return _SEGMENT
     try:
-        logger().info(serialize(record))
-    except Exception:  # noqa: BLE001 - see the docstring
-        logging.getLogger(LOGGER_NAME).debug("audit emit failed", exc_info=True)
+        from haiku.rag.config import get_config
+
+        settings = get_config().audit
+    except Exception:  # noqa: BLE001 - no config is not an audit failure
+        return None
+    if not settings.enabled:
+        return None
+    _SEGMENT = Segment(settings.spool_path)
+    atexit.register(_seal)
+    return _SEGMENT
+
+
+def _seal() -> None:
+    """Seal this process's segment so a forwarder knows the writer finished."""
+    global _SEGMENT
+    if _SEGMENT is not None:
+        with contextlib.suppress(OSError):
+            _SEGMENT.close()
+        _SEGMENT = None
+
+
+def emit(record: AuditEvent) -> None:
+    """Write one record: to the spool when configured, and to the logger.
+
+    The logger always, because a deployment with no spool configured still
+    wants its records somewhere. The spool additionally, because stderr is not
+    durable and cannot be off-loaded -- which is the whole of ASD STIG
+    V-222481/V-222482.
+
+    On failure the configured policy decides. `halt` raises `AuditWriteError`
+    (V-222486's default); `continue` logs and returns, which is the rule's own
+    "unless availability is an overriding concern" exception taken explicitly
+    by a deployment rather than silently by this function.
+    """
+    payload = serialize(record)
+    try:
+        logger().info(payload)
+    except Exception:  # noqa: BLE001 - the spool is the durable path
+        logging.getLogger(LOGGER_NAME).debug("audit log emit failed", exc_info=True)
+
+    segment = _spool()
+    if segment is None:
+        return
+    try:
+        segment.append(payload)
+    except Exception as exc:
+        from haiku.rag.config import get_config
+        from haiku.rag.config.models import OnAuditFailure
+
+        logging.getLogger(LOGGER_NAME).error(
+            "audit spool write failed: %s", exc, exc_info=True
+        )
+        if get_config().audit.on_failure is OnAuditFailure.HALT:
+            raise AuditWriteError(
+                f"could not write an audit record to the spool: {exc}"
+            ) from exc
 
 
 def audited(
