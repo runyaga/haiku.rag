@@ -1,7 +1,7 @@
 import asyncio
 import math
 import sys
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterable
 from importlib import metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, cast
@@ -600,6 +600,24 @@ def build_prompt(base_prompt: str, config: "AppConfig") -> str:
 def escape_sql_string(value: str) -> str:
     """Escape single quotes in SQL string literals."""
     return value.replace("'", "''")
+
+
+def eq_predicate(column: str, value: str) -> str:
+    """A predicate matching `column` to one value, with the value escaped.
+
+    Preferred over interpolating a value at the call site: the escaping cannot
+    be forgotten if the only way to name a value is to pass it here.
+    `ChunkRepository.get_by_id` takes an id an LLM supplies through a
+    `rag_cite` tool call, so a predicate built by hand there is reachable from
+    model output.
+    """
+    return f"{column} = '{escape_sql_string(value)}'"
+
+
+def in_predicate(column: str, values: Iterable[str]) -> str:
+    """A predicate matching `column` against many values, each escaped."""
+    joined = ", ".join(f"'{escape_sql_string(str(value))}'" for value in values)
+    return f"{column} IN ({joined})"
 
 
 def get_package_versions() -> dict[str, str]:

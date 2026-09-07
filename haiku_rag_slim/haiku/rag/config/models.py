@@ -645,6 +645,21 @@ class IngesterConfig(ConfigModel):
     api: APIConfig = Field(default_factory=APIConfig)
 
 
+class TelemetryConfig(ConfigModel):
+    """What observability exports, separate from whether it is enabled."""
+
+    include_content: bool = Field(
+        default=False,
+        description=(
+            "Attach prompt and completion text to spans. pydantic-ai's own "
+            "default is True, which for a RAG application puts retrieved "
+            "document text on every span and therefore into whatever the "
+            "exporter points at. Left False so a corpus that must not leave "
+            "the host does not, and an operator opts in deliberately."
+        ),
+    )
+
+
 class AppConfig(ConfigModel):
     environment: str = "production"
     storage: StorageConfig = Field(default_factory=StorageConfig)
@@ -658,6 +673,7 @@ class AppConfig(ConfigModel):
     doctor: DoctorConfig = Field(default_factory=DoctorConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     prompts: PromptsConfig = Field(default_factory=PromptsConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     ingester: IngesterConfig = Field(default_factory=IngesterConfig)
     evaluations: "EvaluationsConfig" = Field(
         default_factory=lambda: EvaluationsConfig()

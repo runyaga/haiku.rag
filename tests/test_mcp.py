@@ -160,13 +160,36 @@ class TestMCPReadTools:
         assert len(results) == 1
 
     @pytest.mark.asyncio
-    async def test_list_documents_with_filter(self, mcp_db):
+    async def test_list_documents_does_not_expose_a_sql_filter(self, mcp_db):
+        """The tool must not take `filter`; the library still must.
+
+        An MCP tool argument is model-supplied and `filter` is passed to
+        `query.where()` verbatim, so exposing it grants a model arbitrary
+        reads. `--read-only` bounds writes, not reads. The capability stays on
+        the library API, whose caller is trusted code.
+        """
         mcp = create_mcp_server(mcp_db, read_only=True)
         list_docs = await _get_tool(mcp, "list_documents")
 
-        results = await list_docs(filter="title = 'AI Overview'")
-        assert len(results) == 1
-        assert results[0].title == "AI Overview"
+        with pytest.raises(TypeError):
+            await list_docs(filter="title = 'AI Overview'")
+
+        async with HaikuRAG(mcp_db) as rag:
+            filtered = await rag.list_documents(filter="title = 'AI Overview'")
+        assert [d.title for d in filtered] == ["AI Overview"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_does_not_expose_a_sql_filter(self, mcp_db):
+        """Same property on `analyze`, which reaches the same predicate.
+
+        Its filter flows through `capabilities/_tools.py` into
+        `ChunkRepository.search`'s `.where(filter)`.
+        """
+        mcp = create_mcp_server(mcp_db, read_only=True)
+        analyze = await _get_tool(mcp, "analyze")
+
+        with pytest.raises(TypeError):
+            await analyze(question="anything", filter="1 = 1")
 
 
 class TestMCPWriteTools:
@@ -474,11 +497,44 @@ class TestMCPToolsDegradeOnError:
         assert await tool(**kwargs) == expected
 
     @pytest.mark.asyncio
-    async def test_list_documents_returns_empty_for_invalid_filter(self, mcp_db):
+    async def test_list_documents_has_no_filter_to_be_invalid(self, mcp_db):
+        """The invalid-filter path is gone from the tool surface.
+
+        This test previously asserted the tool returned `[]` for a filter
+        LanceDB rejected. With `filter` removed there is no such path.
+        """
         mcp = create_mcp_server(mcp_db, read_only=True)
         list_docs = await _get_tool(mcp, "list_documents")
 
-        assert await list_docs(filter="no_such_column = 1") == []
+        with pytest.raises(TypeError):
+            await list_docs(filter="no_such_column = 1")
+        assert await list_docs() != []
+
+    @pytest.mark.asyncio
+    async def test_list_documents_still_swallows_a_store_failure(
+        self, mcp_db, monkeypatch
+    ):
+        """KNOWN DEFECT, asserted so removing `filter` did not erase the record.
+
+        Dropping `filter` removed one way to reach it, not the swallow itself:
+        `list_documents` still returns `[]` for any failure, which is
+        indistinguishable from "nothing matched". That is the audit-outcome
+        defect ASD STIG V-222476 names -- an audit record cannot state an
+        outcome the code discarded. Fixing it is package G2/H6 scope, not this
+        security patch, so it is pinned here rather than left implicit.
+
+        When the swallow is fixed, this test must flip to asserting the raise.
+        """
+        from haiku.rag.client import HaikuRAG
+
+        async def boom(self, limit=None, offset=None, filter=None):
+            raise RuntimeError("store is gone")
+
+        monkeypatch.setattr(HaikuRAG, "list_documents", boom)
+        mcp = create_mcp_server(mcp_db, read_only=True)
+        list_docs = await _get_tool(mcp, "list_documents")
+
+        assert await list_docs() == []
 
     @pytest.mark.asyncio
     async def test_analyze_reports_the_error(self, mcp_db, monkeypatch):

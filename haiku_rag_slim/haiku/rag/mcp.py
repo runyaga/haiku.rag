@@ -226,18 +226,21 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
     async def list_documents(
         limit: int | None = None,
         offset: int | None = None,
-        filter: str | None = None,
     ) -> list[DocumentInfo]:
-        """List all documents with optional pagination and filtering.
+        """List all documents with optional pagination.
 
         Args:
             limit: Maximum number of documents to return.
             offset: Number of documents to skip.
-            filter: Optional SQL WHERE clause to filter documents.
+
+        The library's `list_documents` also takes a `filter`, an arbitrary SQL
+        WHERE clause. It is deliberately NOT exposed here: an MCP tool argument
+        is model-supplied, so exposing it hands a model arbitrary read access
+        to the store, which `--read-only` does not bound.
         """
         try:
             rag = await _client()
-            documents = await rag.list_documents(limit, offset, filter)
+            documents = await rag.list_documents(limit, offset)
 
             return [
                 DocumentInfo(
@@ -281,7 +284,6 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
     @mcp.tool()
     async def analyze(
         question: str,
-        filter: str | None = None,
         images_base64: list[str] | None = None,
     ) -> str:
         """Answer complex questions using the analysis capability.
@@ -292,17 +294,21 @@ def _covering(scope: "DatabaseScope", config: AppConfig, read_only: bool) -> Fas
 
         Args:
             question: The question to answer.
-            filter: Optional SQL WHERE clause to filter documents.
             images_base64: Base64-encoded images attached to the question
                 (requires a vision-capable analysis model).
 
         Returns:
             The answer as a string.
+
+        `filter` is withheld for the same reason as on `list_documents`: it
+        reaches `ChunkRepository.search`'s `.where(filter)` by way of
+        `capabilities/_tools.py`, so a model-supplied value becomes a SQL
+        predicate.
         """
         try:
             images = _decode_images(images_base64)
             rag = await _client()
-            result = await rag.analyze(question, filter=filter, images=images)
+            result = await rag.analyze(question, images=images)
             return result.answer
         except Exception as e:
             return f"Error running analysis capability: {e!s}"

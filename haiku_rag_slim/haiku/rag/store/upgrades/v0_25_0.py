@@ -9,6 +9,7 @@ from pydantic import Field
 from haiku.rag.store.compression import compress_json, decompress_json
 from haiku.rag.store.engine import Store
 from haiku.rag.store.upgrades import Upgrade
+from haiku.rag.utils import in_predicate
 
 logger = logging.getLogger(__name__)
 
@@ -108,10 +109,9 @@ async def _apply_compress_docling_document(store: Store) -> None:
                     range(0, len(staging_ids), BATCH_SIZE), 1
                 ):
                     batch_ids = staging_ids[i : i + BATCH_SIZE]
-                    id_list = ", ".join(f"'{id}'" for id in batch_ids)
                     batch = (
                         await staging_table.query()
-                        .where(f"id IN ({id_list})")
+                        .where(in_predicate("id", batch_ids))
                         .to_arrow()
                     ).to_pylist()
                     records = [
@@ -158,10 +158,11 @@ async def _apply_compress_docling_document(store: Store) -> None:
 
     for batch_num, i in enumerate(range(0, len(ids), BATCH_SIZE), 1):
         batch_ids = ids[i : i + BATCH_SIZE]
-        id_list = ", ".join(f"'{id}'" for id in batch_ids)
 
         batch = (
-            await store.documents_table.query().where(f"id IN ({id_list})").to_arrow()
+            await store.documents_table.query()
+            .where(in_predicate("id", batch_ids))
+            .to_arrow()
         ).to_pylist()
 
         migrated_batch = [migrate_row(row) for row in batch]
@@ -191,10 +192,9 @@ async def _apply_compress_docling_document(store: Store) -> None:
 
     for batch_num, i in enumerate(range(0, len(staging_ids), BATCH_SIZE), 1):
         batch_ids = staging_ids[i : i + BATCH_SIZE]
-        id_list = ", ".join(f"'{id}'" for id in batch_ids)
 
         batch = (
-            await staging_table.query().where(f"id IN ({id_list})").to_arrow()
+            await staging_table.query().where(in_predicate("id", batch_ids)).to_arrow()
         ).to_pylist()
         records = [
             DocumentRecordV4(
