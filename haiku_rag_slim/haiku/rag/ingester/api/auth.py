@@ -22,18 +22,26 @@ _bearer = HTTPBearer(auto_error=False)
 BEARER_ACTOR = "ingester-api-token"
 
 
-def _record(request: Request, event: Event, outcome: Outcome, actor: str) -> None:
+def _record(
+    request: Request,
+    event: Event,
+    outcome: Outcome,
+    actor: str,
+    source: ActorSource,
+) -> None:
     """Record one authentication decision.
 
     Both directions are recorded. An authentication surface that logs only its
     failures cannot answer "who was in here", which is the question V-222462
     exists to make answerable.
+
+    `source` is passed by the caller, never inferred from `actor`. An earlier
+    version derived it -- anything that was not the bearer actor became
+    AUTH_DISABLED -- so a REJECTED credential was recorded as "the control
+    plane had no token configured". That is a false statement about the
+    server's configuration, and it is the exact class of lie `actor_source`
+    exists to prevent. Found by an independent review.
     """
-    source = (
-        ActorSource.SHARED_BEARER_TOKEN
-        if actor == BEARER_ACTOR
-        else ActorSource.AUTH_DISABLED
-    )
     emit(
         AuditEvent(
             event=event,
@@ -60,13 +68,31 @@ async def require_auth(
         # Allowed, and recorded as allowed-without-authentication rather than
         # not recorded: "the control plane was open" is the fact an assessor
         # needs, and a missing record does not state it.
-        _record(request, Event.AUTH_SUCCESS, Outcome.SUCCESS, UNAUTHENTICATED)
+        _record(
+            request,
+            Event.AUTH_SUCCESS,
+            Outcome.SUCCESS,
+            UNAUTHENTICATED,
+            ActorSource.AUTH_DISABLED,
+        )
         return
     if creds is None or not secrets.compare_digest(creds.credentials, expected):
-        _record(request, Event.AUTH_FAILURE, Outcome.DENIED, UNAUTHENTICATED)
+        _record(
+            request,
+            Event.AUTH_FAILURE,
+            Outcome.DENIED,
+            UNAUTHENTICATED,
+            ActorSource.CREDENTIAL_REJECTED,
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    _record(request, Event.AUTH_SUCCESS, Outcome.SUCCESS, BEARER_ACTOR)
+    _record(
+        request,
+        Event.AUTH_SUCCESS,
+        Outcome.SUCCESS,
+        BEARER_ACTOR,
+        ActorSource.SHARED_BEARER_TOKEN,
+    )

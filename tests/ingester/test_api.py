@@ -862,3 +862,67 @@ async def test_database_requires_auth(state):
     async with _client(state, auth_token="secret") as client:
         resp = await client.get("/database")
     assert resp.status_code == 401
+
+
+# --- what the auth record says about the SERVER, not just the caller ---
+
+
+@pytest.mark.asyncio
+async def test_rejected_credential_is_not_recorded_as_auth_disabled(state, caplog):
+    """A refused request must not claim the control plane was open.
+
+    `actor_source` was derived from `actor`: anything that was not the bearer
+    actor became AUTH_DISABLED. Both a rejected credential and a server with no
+    token configured record `unauthenticated` as the actor, so a REJECTED
+    request was recorded as "the control plane had no token" -- a false
+    statement about the server's configuration, in an audit record, on the
+    authentication surface. The two are opposite facts and an assessor reading
+    V-222462 needs to tell them apart.
+    """
+    import json
+
+    with caplog.at_level("INFO", logger="haiku.rag.audit"):
+        async with _client(state, auth_token="secret") as client:
+            resp = await client.get("/stats", headers={"Authorization": "Bearer wrong"})
+
+    assert resp.status_code == 401
+    records = [json.loads(r.message) for r in caplog.records]
+    denied = [r for r in records if r["outcome"] == "denied"]
+    assert denied, "a refused request recorded no audit record"
+    assert denied[-1]["actor_source"] == "credential_rejected"
+    assert denied[-1]["event"] == "auth.failure"
+
+
+@pytest.mark.asyncio
+async def test_open_control_plane_says_so(state, caplog):
+    """The other direction: no token configured is recorded as exactly that."""
+    import json
+
+    with caplog.at_level("INFO", logger="haiku.rag.audit"):
+        async with _client(state, auth_token=None) as client:
+            resp = await client.get("/stats")
+
+    assert resp.status_code == 200
+    records = [json.loads(r.message) for r in caplog.records]
+    allowed = [r for r in records if r["event"] == "auth.success"]
+    assert allowed, "an unauthenticated-but-allowed request recorded nothing"
+    assert allowed[-1]["actor_source"] == "auth_disabled"
+
+
+@pytest.mark.asyncio
+async def test_accepted_credential_names_the_credential(state, caplog):
+    """And a match is recorded as the shared token it actually was."""
+    import json
+
+    with caplog.at_level("INFO", logger="haiku.rag.audit"):
+        async with _client(state, auth_token="secret") as client:
+            resp = await client.get(
+                "/stats", headers={"Authorization": "Bearer secret"}
+            )
+
+    assert resp.status_code == 200
+    records = [json.loads(r.message) for r in caplog.records]
+    ok = [r for r in records if r["event"] == "auth.success"]
+    assert ok, "an authenticated request recorded nothing"
+    assert ok[-1]["actor_source"] == "shared_bearer_token"
+    assert ok[-1]["actor"] == "ingester-api-token"

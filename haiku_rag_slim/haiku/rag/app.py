@@ -1,4 +1,8 @@
+import asyncio
+import contextlib
 import logging
+import signal
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +34,38 @@ from haiku.rag.config import redact_secrets
 from haiku.rag.utils import format_bytes, format_citations_rich
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _terminate_gracefully() -> Iterator[None]:
+    """Turn SIGTERM into task cancellation, so `finally` blocks still run.
+
+    Measured: without this, a SIGTERM terminates the interpreter without
+    unwinding, so a shutdown record emitted in a `finally` is never written --
+    and `systemctl stop` sends SIGTERM. A service whose stop event is missing
+    on the ordinary stop path does not satisfy ASD STIG V-222469, however
+    carefully the record is placed.
+
+    Best-effort: `add_signal_handler` is unavailable on some platforms and
+    outside the main thread, and the HTTP transport's server may install its
+    own. A failure to install leaves the previous behaviour rather than
+    breaking startup.
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    installed: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda: task and task.cancel())
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed.append(sig)
+    try:
+        yield
+    finally:
+        for sig in installed:
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.remove_signal_handler(sig)
 
 
 class HaikuRAGApp:
@@ -956,14 +992,15 @@ class HaikuRAGApp:
         _service(audit.Event.SERVICE_START, audit.Outcome.SUCCESS)
         outcome = audit.Outcome.SUCCESS
         try:
-            if transport == "stdio":
-                await server.run_stdio_async()
-            else:
-                logger.info(f"Starting MCP server on {host}:{port}")
-                await server.run_http_async(
-                    transport="streamable-http", host=host, port=port
-                )
-        except KeyboardInterrupt:
+            with _terminate_gracefully():
+                if transport == "stdio":
+                    await server.run_stdio_async()
+                else:
+                    logger.info(f"Starting MCP server on {host}:{port}")
+                    await server.run_http_async(
+                        transport="streamable-http", host=host, port=port
+                    )
+        except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         except Exception:
             outcome = audit.Outcome.FAILURE
