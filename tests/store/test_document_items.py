@@ -132,6 +132,26 @@ class TestExtractItemText:
         item, _ = next(iter(doc.iterate_items()))
         assert extract_item_text(item, doc) == "Hello world"
 
+    @pytest.mark.asyncio
+    async def test_markdown_list_items_keep_rendered_text(self):
+        from haiku.rag.config import AppConfig
+        from haiku.rag.converters.docling_local import DoclingLocalConverter
+
+        doc = await DoclingLocalConverter(AppConfig()).convert_text(
+            "# Guide\n\n- Click **Settings**\n- Choose _Billing_",
+            name="guide.md",
+            format="md",
+        )
+
+        list_items = [
+            item for item in extract_items("doc-1", doc) if item.label == "list_item"
+        ]
+
+        assert [item.text for item in list_items] == [
+            "- Click **Settings**",
+            "- Choose *Billing*",
+        ]
+
     def test_returns_none_for_empty_item(self):
         from docling_core.types.doc.document import DoclingDocument
 

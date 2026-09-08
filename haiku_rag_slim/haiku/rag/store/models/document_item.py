@@ -73,15 +73,17 @@ def extract_item_text(
 
     Handles different item types:
     - TextItem, SectionHeaderItem, etc.: Use .text attribute
-    - TableItem: serialize to markdown. ``get_serializer`` supplies a reused
-      ``MarkdownDocSerializer`` (see ``extract_items``); when absent a one-off
-      serializer is built so direct calls keep working.
+    - TableItem and ListItem: serialize to markdown. ``get_serializer`` supplies
+      a reused ``MarkdownDocSerializer`` (see ``extract_items``); when absent a
+      one-off serializer is built so direct calls keep working. ListItem is a
+      container in Markdown documents, so its own ``text`` is empty while the
+      formatted content lives in its children.
     - PictureItem: Prefer the VLM description (when picture_description is on)
       so pictures carry meaningful prose into chunk text and survive
       ``expand_with_items``' ``if item.text:`` filter; otherwise fall back to
       the picture's caption text.
     """
-    from docling_core.types.doc.document import PictureItem, TableItem
+    from docling_core.types.doc.document import ListItem, PictureItem, TableItem
 
     if text := getattr(item, "text", None):
         return text
@@ -91,7 +93,7 @@ def extract_item_text(
             return description
         return _picture_caption_text(item, docling_doc)
 
-    if isinstance(item, TableItem):
+    if isinstance(item, (ListItem, TableItem)):
         try:
             if get_serializer is None:
                 from docling_core.transforms.serializer.markdown import (
@@ -117,8 +119,9 @@ def extract_items(
 
     Runs iterate_items() and extracts the fields needed for context expansion:
     self_ref, label, pre-rendered text, and page numbers from provenance.
-    Items are stored as docling produces them — container items (e.g., list_item)
-    may have empty text with content in their children.
+    Items are stored as docling produces them, with markdown-rendered text for
+    container items such as list_item whose own ``text`` is empty but whose
+    formatted content lives in their children.
 
     For PictureItems, the embedded image is decoded from ``image.uri`` (a base64
     data URI) and stored on ``DocumentItem.picture_data``. When the live docling
