@@ -2,6 +2,90 @@
 
 ## [Unreleased]
 
+### Security
+
+- **SQL injection: every LanceDB predicate is escaped.** Predicates were built
+  by f-string interpolation in 46 places and 14 interpolated a value that never
+  passed through `escape_sql_string`. `store/repositories/chunk.py:170` is
+  inside `get_by_id`, reached while resolving a `rag_cite` chunk id the MODEL
+  supplied, so the untrusted path was the citation path itself; another was a
+  raw predicate on a `.delete()`. Two helpers, `eq_predicate` and
+  `in_predicate`, make a raw interpolation unexpressible at those sites.
+  ASD STIG V-222607.
+- **`filter` is gone from the MCP surface.** `list_documents` and `analyze`
+  each took an arbitrary SQL `WHERE` clause from a model straight into the
+  store -- two passthroughs on two different predicates. Both are dropped from
+  the MCP tools and retained on the library API, where the caller is code
+  rather than a model. ASD STIG V-222607, V-222609.
+- **Prompt and completion content stays off spans by default.**
+  `configure(include_content=...)`, defaulting to off, so retrieved corpus text
+  does not leave the host on a span merely because `LOGFIRE_TOKEN` is set.
+  ASD STIG V-222444.
+
+### Added
+
+- **An audit subsystem.** `haiku.rag.audit` -- a record that cannot omit who
+  did something, emit sites at the boundaries, a durable spool, and
+  store-and-forward to a file or a syslog-over-TLS collector.
+  - `audit/record.py`: a 14-field `AuditEvent` with closed vocabularies for
+    event, component and outcome. `actor` and `actor_source` are validated
+    against each other, so a record cannot claim an identity it did not
+    establish, and cannot claim anonymity for a request it authenticated.
+  - `audit/emit.py`: an `@audited` decorator, and `AuditWriteError` -- a write
+    that cannot be recorded fails rather than proceeding unrecorded, per the
+    configured `on_failure`.
+  - `audit/spool.py`: a hash-chained append-only segment, fsynced per record,
+    with a sealed footer. A truncated tail is detectable; a torn last line
+    keeps the intact prefix rather than discarding the segment.
+  - `audit/forward.py`: drains only sealed, quiet segments whose writer is
+    gone, and deletes only what the sink accepted.
+  - `audit/sinks.py`: `FileSink` and `SyslogTLSSink`, RFC 5424 framed with
+    RFC 6587 octet counting. The SD-ID is required configuration -- PEN 32473
+    is RFC 5612's documentation number and must not be shipped as a default.
+  - `audit:` configuration section, `extra="forbid"`, refusing a configuration
+    that is enabled with no sinks.
+  - All 10 MCP tools are `@audited`; the 11 bare `except Exception` handlers
+    that swallowed outcomes are gone.
+  ASD STIG V-222431, V-222462, V-222463, V-222465, V-222471-V-222477,
+  V-222487-V-222499.
+
+### Fixed
+
+- **A SIGTERM left no shutdown record.** `serve` emits `service.stop` from a
+  `finally`, and the default SIGTERM handler terminates the interpreter without
+  unwinding. `systemctl stop` sends SIGTERM, so the ordinary stop path produced
+  no record while a crash produced one. ASD STIG V-222469.
+- **A rejected credential was recorded as an open control plane.**
+  `actor_source` was derived from `actor`, so a REFUSED request and a server
+  with no token configured both recorded `auth_disabled` -- opposite facts
+  about the server, conflated in the audit record. ASD STIG V-222462.
+
+### Corrections to earlier assessment work
+
+The issues carry the findings; this section carries what earlier passes of the
+assessment got WRONG, because a reader deciding whether to trust the rest needs
+to know how it failed.
+
+- **"haiku.rag 4.0.3"** appeared as the assessed version. It is not a version
+  of anything and appears nowhere in the package. It survived a full CAT I pass
+  and a CAT II logging pass before anyone ran `importlib.metadata.version`. The
+  target is 0.82.1.
+- **"Eight raw predicates" was wrong in both directions.** Three of the sites
+  listed were already escaped -- naming a safe line as a finding damages an
+  assessment as much as missing an unsafe one -- and six were missed, including
+  the `.delete()`. The count came from a grep for `.where(f"`, which cannot see
+  a `.delete()` or a value built by a `join()` on the preceding line. The real
+  figure is 14, enumerated by an AST walk that fails if a new site appears.
+- **The second MCP SQL passthrough was missed.** The assessment named
+  `list_documents` and not `analyze`, which forwards its own `filter` into
+  `ChunkRepository.search`. A grep for the tool decorator would have found it;
+  a grep for `list_documents` did not.
+- **`include_content` was added as a parameter wired to nothing.** It defaulted
+  safe and was never passed on, so the patch read correctly and did nothing.
+  Caught by an independent review, twice more in the same package: a check
+  testing for the presence of the string `"include_content="` rather than the
+  value, and an AST walk reading one node type rather than what the code does.
+
 ## [0.82.1] - 2026-09-03
 
 ### Fixed

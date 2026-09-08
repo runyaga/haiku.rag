@@ -68,7 +68,10 @@ def main(
 
     _load_config_with_override(config)
     configure_cli_logging()
-    configure_telemetry(service_name="haiku-ingester")
+    configure_telemetry(
+        service_name="haiku-ingester",
+        include_content=get_config().telemetry.include_content,
+    )
 
 
 def cli() -> None:

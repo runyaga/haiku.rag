@@ -22,6 +22,7 @@ from haiku.rag.store.models.document import Document
 from haiku.rag.store.models.document_item import extract_items
 from haiku.rag.store.repositories.settings import SettingsRepository
 from haiku.rag.store.schema import ChunkRecordBase, ensure_indexes
+from haiku.rag.utils import eq_predicate
 
 if TYPE_CHECKING:
     from docling_core.types.doc.document import DoclingDocument
@@ -371,7 +372,7 @@ async def _read_chunks_from_staging(staging_table, document_id: str) -> list[Chu
     """
     rows = (
         await staging_table.query()
-        .where(f"document_id = '{document_id}'")
+        .where(eq_predicate("document_id", document_id))
         .select(["id", "document_id", "content", "metadata", "order"])
         .to_arrow()
     ).to_pylist()

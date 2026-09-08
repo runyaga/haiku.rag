@@ -22,6 +22,7 @@ def configure(
     service_name: str | None = None,
     console: Literal[False] | None = False,
     scrubbing: Literal[False] | None = None,
+    include_content: bool = False,
 ) -> None:
     """Configure Logfire and enable pydantic-ai instrumentation for the
     running process. Each CLI entry point calls this once at startup.
@@ -38,6 +39,11 @@ def configure(
     - scrubbing: None (default) keeps logfire's secret scrubbing on. Pass
       False to disable it when span content legitimately contains tokens
       that trip the scrubber (e.g. eval answer text).
+    - include_content: False (default) keeps prompt and completion text OFF
+      spans. pydantic-ai's own default is True, which for a RAG application
+      puts retrieved document text on every span and therefore into whatever
+      the exporter points at. A corpus may be the thing that must not leave the
+      host, so the default here is the safe one and an operator opts in.
     """
     try:
         import logfire as _lf
@@ -61,9 +67,25 @@ def configure(
             console=console,
             scrubbing=scrubbing,
         )
-        _lf.instrument_pydantic_ai()
-    except Exception:  # pragma: no cover
-        pass
+        _lf.instrument_pydantic_ai(include_content=include_content)
+    except Exception as exc:  # pragma: no cover
+        # Recorded, not swallowed. A telemetry stack that fails silently is
+        # ASD STIG V-222485 (alert on audit processing failure): the operator
+        # believes they have observability and has none. Still non-fatal --
+        # halting on it is V-222486 and belongs with the audit spool, which can
+        # tell a write failure from a forwarding backlog.
+        from haiku.rag import audit
+
+        audit.emit(
+            audit.AuditEvent(
+                event=audit.Event.AUDIT_FAILURE,
+                component=audit.Component.TELEMETRY,
+                outcome=audit.Outcome.FAILURE,
+                actor=audit.LOCAL_PROCESS,
+                actor_source=audit.ActorSource.NO_AUTHENTICATION_SURFACE,
+                detail={"error": type(exc).__name__, "stage": "configure"},
+            )
+        )
 
 
 __all__ = ["attach_context", "configure", "get_context", "logfire"]

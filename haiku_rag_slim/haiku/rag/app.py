@@ -1,4 +1,8 @@
+import asyncio
+import contextlib
 import logging
+import signal
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -15,6 +19,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from haiku.rag import audit
 from haiku.rag.client import HaikuRAG, RebuildMode
 from haiku.rag.config import AppConfig, get_config
 from haiku.rag.mcp import _covering as _mcp_server_covering
@@ -29,6 +34,38 @@ from haiku.rag.config import redact_secrets
 from haiku.rag.utils import format_bytes, format_citations_rich
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _terminate_gracefully() -> Iterator[None]:
+    """Turn SIGTERM into task cancellation, so `finally` blocks still run.
+
+    Measured: without this, a SIGTERM terminates the interpreter without
+    unwinding, so a shutdown record emitted in a `finally` is never written --
+    and `systemctl stop` sends SIGTERM. A service whose stop event is missing
+    on the ordinary stop path does not satisfy ASD STIG V-222469, however
+    carefully the record is placed.
+
+    Best-effort: `add_signal_handler` is unavailable on some platforms and
+    outside the main thread, and the HTTP transport's server may install its
+    own. A failure to install leaves the previous behaviour rather than
+    breaking startup.
+    """
+    loop = asyncio.get_running_loop()
+    task = asyncio.current_task()
+    installed: list[signal.Signals] = []
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, lambda: task and task.cancel())
+        except (NotImplementedError, RuntimeError):
+            continue
+        installed.append(sig)
+    try:
+        yield
+    finally:
+        for sig in installed:
+            with contextlib.suppress(NotImplementedError, RuntimeError):
+                loop.remove_signal_handler(sig)
 
 
 class HaikuRAGApp:
@@ -935,13 +972,38 @@ class HaikuRAGApp:
         # single-database configuration drops the name results and citations
         # carry.
         server = _mcp_server_covering(self.scope, self.config, self.read_only)
-        try:
-            if transport == "stdio":
-                await server.run_stdio_async()
-            else:
-                logger.info(f"Starting MCP server on {host}:{port}")
-                await server.run_http_async(
-                    transport="streamable-http", host=host, port=port
+
+        def _service(event: audit.Event, outcome: audit.Outcome) -> None:
+            """Record the server's lifecycle. A shutdown that is not recorded
+            leaves a gap an assessor cannot distinguish from a still-running
+            service (ASD STIG V-222468, V-222469)."""
+            audit.emit(
+                audit.AuditEvent(
+                    event=event,
+                    component=audit.Component.MCP,
+                    outcome=outcome,
+                    actor=audit.LOCAL_PROCESS,
+                    actor_source=audit.ActorSource.NO_AUTHENTICATION_SURFACE,
+                    target=transport if transport == "stdio" else f"{host}:{port}",
+                    detail={"read_only": self.read_only},
                 )
-        except KeyboardInterrupt:
+            )
+
+        _service(audit.Event.SERVICE_START, audit.Outcome.SUCCESS)
+        outcome = audit.Outcome.SUCCESS
+        try:
+            with _terminate_gracefully():
+                if transport == "stdio":
+                    await server.run_stdio_async()
+                else:
+                    logger.info(f"Starting MCP server on {host}:{port}")
+                    await server.run_http_async(
+                        transport="streamable-http", host=host, port=port
+                    )
+        except (KeyboardInterrupt, asyncio.CancelledError):
             pass
+        except Exception:
+            outcome = audit.Outcome.FAILURE
+            raise
+        finally:
+            _service(audit.Event.SERVICE_STOP, outcome)

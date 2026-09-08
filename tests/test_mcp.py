@@ -160,13 +160,36 @@ class TestMCPReadTools:
         assert len(results) == 1
 
     @pytest.mark.asyncio
-    async def test_list_documents_with_filter(self, mcp_db):
+    async def test_list_documents_does_not_expose_a_sql_filter(self, mcp_db):
+        """The tool must not take `filter`; the library still must.
+
+        An MCP tool argument is model-supplied and `filter` is passed to
+        `query.where()` verbatim, so exposing it grants a model arbitrary
+        reads. `--read-only` bounds writes, not reads. The capability stays on
+        the library API, whose caller is trusted code.
+        """
         mcp = create_mcp_server(mcp_db, read_only=True)
         list_docs = await _get_tool(mcp, "list_documents")
 
-        results = await list_docs(filter="title = 'AI Overview'")
-        assert len(results) == 1
-        assert results[0].title == "AI Overview"
+        with pytest.raises(TypeError):
+            await list_docs(filter="title = 'AI Overview'")
+
+        async with HaikuRAG(mcp_db) as rag:
+            filtered = await rag.list_documents(filter="title = 'AI Overview'")
+        assert [d.title for d in filtered] == ["AI Overview"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_does_not_expose_a_sql_filter(self, mcp_db):
+        """Same property on `analyze`, which reaches the same predicate.
+
+        Its filter flows through `capabilities/_tools.py` into
+        `ChunkRepository.search`'s `.where(filter)`.
+        """
+        mcp = create_mcp_server(mcp_db, read_only=True)
+        analyze = await _get_tool(mcp, "analyze")
+
+        with pytest.raises(TypeError):
+            await analyze(question="anything", filter="1 = 1")
 
 
 class TestMCPWriteTools:
@@ -268,21 +291,26 @@ class TestMCPImageQuery:
         names = {t.name for t in await mcp.list_tools()}
         assert "search_documents_by_image" in names
 
+        # The stub embedder registers the tool but cannot serve a query, and
+        # that now surfaces. Previously the ValueError was swallowed into an
+        # empty list, so this test passed while asserting nothing about the
+        # search path it names.
         search_by_image = await _get_tool(mcp, "search_documents_by_image")
-        # Standalone PNG header (won't decode to a real image but our stub doesn't care).
         import base64
 
-        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n").decode("ascii")
-        results = await search_by_image(image_base64=png_b64)
-        # Empty list is fine (the stub vector won't match the toy fixture).
-        assert isinstance(results, list)
+        with pytest.raises(ValueError, match="multimodal embedder"):
+            await search_by_image(
+                image_base64=base64.b64encode(b"not-an-image").decode()
+            )
 
     @pytest.mark.asyncio
-    async def test_image_query_returns_empty_on_invalid_base64(
-        self, mcp_db, monkeypatch
-    ):
-        """Garbage base64 from the caller is swallowed, returning an empty
-        list rather than crashing the MCP server."""
+    async def test_image_query_rejects_invalid_base64(self, mcp_db, monkeypatch):
+        """Garbage base64 is reported, not swallowed into an empty list.
+
+        Its previous form asserted `[]`, which a caller cannot distinguish from
+        "the image matched nothing" -- the outcome-indistinguishability ASD
+        STIG V-222476 is about.
+        """
         from haiku.rag.embeddings import EmbedderWrapper
 
         class StubMultimodal(EmbedderWrapper):
@@ -300,9 +328,9 @@ class TestMCPImageQuery:
         search_by_image = await _get_tool(mcp, "search_documents_by_image")
 
         # Not valid base64 (contains non-base64 chars) — the strict decoder
-        # in search_documents_by_image rejects it.
-        results = await search_by_image(image_base64="!!! not base64 !!!")
-        assert results == []
+        # in search_documents_by_image rejects it, and says so.
+        with pytest.raises(Exception, match="(?i)base64|padding|character"):
+            await search_by_image(image_base64="!!! not base64 !!!")
 
 
 class TestMCPImageInput:
@@ -347,11 +375,16 @@ class TestMCPImageInput:
 
     @pytest.mark.asyncio
     async def test_ask_question_rejects_invalid_base64(self, mcp_db):
+        """A malformed image is the caller's error and is raised as one.
+
+        Previously the tool returned a string containing "Error", which a
+        caller had to notice by reading it.
+        """
         mcp = create_mcp_server(mcp_db, read_only=True)
         ask = await _get_tool(mcp, "ask_question")
 
-        result = await ask(question="q", images_base64=["!!! not base64 !!!"])
-        assert "Error" in result
+        with pytest.raises(Exception, match="(?i)base64|padding|character"):
+            await ask(question="q", images_base64=["!!! not base64 !!!"])
 
     @pytest.mark.asyncio
     async def test_ask_question_without_images_passes_none(self, mcp_db, monkeypatch):
@@ -461,9 +494,22 @@ class TestMCPToolsDegradeOnError:
             ("list_documents", "list_documents", {}, []),
         ],
     )
-    async def test_tool_returns_empty_value_when_client_raises(
-        self, mcp_db, monkeypatch, client_method, tool_name, kwargs, expected
+    async def test_tool_reports_a_failure_when_client_raises(
+        self, mcp_db, monkeypatch, caplog, client_method, tool_name, kwargs, expected
     ):
+        """A failing tool raises AND records the failure.
+
+        This test previously asserted the tool returned `expected` -- None,
+        False or [] -- when the client raised. That return value is the defect:
+        it is indistinguishable from "no such document" or "nothing matched",
+        so a caller cannot tell a store failure from an empty result and an
+        audit record cannot state an outcome the code discarded. ASD STIG
+        V-222476 requires the outcome; V-222431 and V-222471/2 require the
+        event. `expected` is kept in the parametrisation as the record of what
+        each tool used to return.
+        """
+        import json
+
         async def boom(self, *args, **kw):
             raise RuntimeError("client exploded")
 
@@ -471,17 +517,67 @@ class TestMCPToolsDegradeOnError:
         mcp = create_mcp_server(mcp_db, read_only=False)
         tool = await _get_tool(mcp, tool_name)
 
-        assert await tool(**kwargs) == expected
+        with caplog.at_level("INFO", logger="haiku.rag.audit"):
+            with pytest.raises(RuntimeError, match="client exploded"):
+                await tool(**kwargs)
+
+        records = [json.loads(r.message) for r in caplog.records]
+        failures = [r for r in records if r["outcome"] == "failure"]
+        assert failures, f"{tool_name} raised without recording a failure"
+        assert failures[-1]["detail"]["tool"] == tool_name
+        assert failures[-1]["detail"]["error"] == "RuntimeError"
+        assert failures[-1]["timestamp"]
 
     @pytest.mark.asyncio
-    async def test_list_documents_returns_empty_for_invalid_filter(self, mcp_db):
+    async def test_list_documents_has_no_filter_to_be_invalid(self, mcp_db):
+        """The invalid-filter path is gone from the tool surface.
+
+        This test previously asserted the tool returned `[]` for a filter
+        LanceDB rejected. With `filter` removed there is no such path.
+        """
         mcp = create_mcp_server(mcp_db, read_only=True)
         list_docs = await _get_tool(mcp, "list_documents")
 
-        assert await list_docs(filter="no_such_column = 1") == []
+        with pytest.raises(TypeError):
+            await list_docs(filter="no_such_column = 1")
+        assert await list_docs() != []
 
     @pytest.mark.asyncio
-    async def test_analyze_reports_the_error(self, mcp_db, monkeypatch):
+    async def test_list_documents_no_longer_swallows_a_store_failure(
+        self, mcp_db, monkeypatch
+    ):
+        """The flip this test was written to demand.
+
+        Its previous form asserted `list_documents` returned `[]` for any
+        failure and labelled that a KNOWN DEFECT, with the instruction that it
+        "must flip to asserting the raise" once fixed. This is that flip: the
+        store failure now reaches the caller instead of arriving as an empty
+        result (ASD STIG V-222476).
+        """
+        from haiku.rag.client import HaikuRAG
+
+        async def boom(self, limit=None, offset=None, filter=None):
+            raise RuntimeError("store is gone")
+
+        monkeypatch.setattr(HaikuRAG, "list_documents", boom)
+        mcp = create_mcp_server(mcp_db, read_only=True)
+        list_docs = await _get_tool(mcp, "list_documents")
+
+        with pytest.raises(RuntimeError, match="store is gone"):
+            await list_docs()
+
+    @pytest.mark.asyncio
+    async def test_analyze_raises_rather_than_returning_an_error_string(
+        self, mcp_db, monkeypatch
+    ):
+        """An error returned as a STRING is still a successful-looking return.
+
+        This test previously asserted the message appeared in the returned
+        string. A tool whose success and failure both come back as `str` puts
+        the burden of noticing on the caller's prose parsing, and leaves the
+        audit record with no outcome to state (ASD STIG V-222476).
+        """
+
         async def boom(self, question, filter=None, images=None):
             raise RuntimeError("sandbox exploded")
 
@@ -489,7 +585,8 @@ class TestMCPToolsDegradeOnError:
         mcp = create_mcp_server(mcp_db, read_only=True)
         analyze = await _get_tool(mcp, "analyze")
 
-        assert "sandbox exploded" in await analyze(question="q")
+        with pytest.raises(RuntimeError, match="sandbox exploded"):
+            await analyze(question="q")
 
     @pytest.mark.asyncio
     async def test_ask_question_appends_citations_when_requested(
